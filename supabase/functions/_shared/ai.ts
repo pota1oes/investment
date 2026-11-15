@@ -194,6 +194,31 @@ export function decisionSchema(symbols: string[]) {
   } as const;
 }
 
+/**
+ * For AI services that can only promise "valid JSON" but not a particular shape: the
+ * shape is spelled out in words and by example. parseDecisions() still checks every field.
+ */
+export function jsonInstructions(symbols: string[]): string {
+  const example = {
+    view: "One or two sentences about what stood out today.",
+    decisions: [{
+      symbol: symbols[0] ?? "TICKER",
+      action: "hold",
+      confidence: 55,
+      evidence: "none",
+      reason: "One or two plain sentences naming the concrete fact relied on.",
+      sources: [] as string[],
+    }],
+  };
+  return [
+    "Answer with a single JSON object and nothing else, in exactly this shape:",
+    JSON.stringify(example, null, 2),
+    `"symbol" must be one of: ${symbols.join(", ")}. Include every one of them exactly once.`,
+    '"action" must be "buy", "hold" or "sell". "confidence" is a whole number from 0 to 100.',
+    '"evidence" must be "confirmed", "single_source", "rumor" or "none". "sources" is a list of outlet names.',
+  ].join("\n");
+}
+
 /** Validates the AI's answer. Anything unexpected is dropped rather than trusted. */
 export function parseDecisions(raw: unknown, symbols: string[]): { view: string; decisions: AiDecision[] } {
   const obj = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;

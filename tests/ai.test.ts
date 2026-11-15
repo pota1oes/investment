@@ -8,6 +8,7 @@ import {
   clean,
   decisionSchema,
   gate,
+  jsonInstructions,
   parseDecisions,
   priceFacts,
 } from "../supabase/functions/_shared/ai.ts";
@@ -97,6 +98,16 @@ describe("parseDecisions: never trust the answer blindly", () => {
     expect(out.decisions[0]).toMatchObject({ action: "buy", confidence: 100, sources: ["A", "3"] });
     expect(out.decisions[1]).toMatchObject({ action: "hold", confidence: 0, evidence: "none" });
     expect(parseDecisions(null, ["AAA"]).decisions).toEqual([]);
+  });
+  it("spells out the answer shape for services without schema enforcement", () => {
+    const text = jsonInstructions(["AAA", "BBB"]);
+    expect(text).toContain("JSON");
+    expect(text).toContain("AAA, BBB");
+    // The example in the instructions must itself pass validation.
+    const example = JSON.parse(text.slice(text.indexOf("{"), text.lastIndexOf("}") + 1));
+    expect(parseDecisions(example, ["AAA", "BBB"]).decisions).toEqual([
+      expect.objectContaining({ symbol: "AAA", action: "hold", evidence: "none" }),
+    ]);
   });
   it("schema lists exactly the bot's symbols", () => {
     const s = decisionSchema(["AAA", "BBB"]);

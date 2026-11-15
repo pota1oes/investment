@@ -54,8 +54,10 @@ You do these steps yourself — they involve creating accounts and handling secr
    `npx supabase secrets set ALPHAVANTAGE_KEY=...` (free tier: about 25 lookups a day).
    Optional, for company facts on stock pages (market value, P/E, earnings dates, analyst
    ratings): get a free key at finnhub.io and run `npx supabase secrets set FINNHUB_KEY=...`.
-   Optional, for the AI analyst: create an API key at console.anthropic.com (a paid
-   service, billed by Anthropic per use) and store it as the `ANTHROPIC_API_KEY` secret.
+   Optional, for the AI analyst: store a DeepSeek API key (platform.deepseek.com, paid
+   per use) as the `DEEPSEEK_API_KEY` secret. The model defaults to `deepseek-v4-pro`;
+   set `DEEPSEEK_MODEL=deepseek-flash` for the cheaper, faster one. If no DeepSeek key is
+   set, an `ANTHROPIC_API_KEY` is used instead (Claude).
 4. Open `supabase/cron.sql`, fill in the two placeholders, and run it in the SQL editor.
 
 ### 2. GitHub Pages (the website)
@@ -100,7 +102,9 @@ You do these steps yourself — they involve creating accounts and handling secr
 
 ## AI analyst
 
-An optional bot type where an AI model (Claude) decides instead of a price formula.
+An optional bot type where an AI model (DeepSeek by default, or Claude) decides instead of
+a price formula. The evidence listed below, plus the bot's budget, cash and holdings, is
+sent to that AI service on every check; no name, email or account number is included.
 
 - **What it sees:** for each symbol, recent newswire articles, headlines from other
   outlets (to check whether a story is corroborated), price changes, company facts and

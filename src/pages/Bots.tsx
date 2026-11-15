@@ -530,7 +530,7 @@ function BotCard({ bot, onEdit, reload }: { bot: Bot; onEdit: () => void; reload
         <details className="ai-view">
           <summary>
             What the AI thinks <small className="muted">· {ago(new Date(ai.decidedAt).toISOString())}
-              {ai.cost ? ` · about $${ai.cost.usd.toFixed(3)} for this check` : ""}</small>
+              {ai.cost ? ` · at most about $${ai.cost.usd.toFixed(3)} for this check` : ""}</small>
           </summary>
           {ai.view && <p>{ai.view}</p>}
           <div className="scroll-x">

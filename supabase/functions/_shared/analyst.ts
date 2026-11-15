@@ -1,5 +1,9 @@
-// The AI analyst's network side: collect the evidence, ask Claude, return a verdict.
+// The AI analyst's network side: collect the evidence, ask the AI, return a verdict.
 // The rules for what a verdict may do live in ai.ts and are enforced by code.
+//
+// Two AI services are supported; whichever key is set on the server is used:
+//   DEEPSEEK_API_KEY  -> DeepSeek (checked first)
+//   ANTHROPIC_API_KEY -> Claude
 
 import Anthropic from "npm:@anthropic-ai/sdk@^1.8.0";
 import type { SupabaseClient } from "jsr:@supabase/supabase-js@2";
@@ -11,6 +15,7 @@ import {
   decisionSchema,
   estimateUsd,
   type Evidence,
+  jsonInstructions,
   parseDecisions,
   priceFacts,
   type SymbolEvidence,
@@ -26,7 +31,18 @@ const MODEL = "claude-opus-5-5";
 const LIST_PRICE = { input: 4, output: 20 }; // USD per million tokens
 const NEWS_WINDOW_MS = 4 * 86_400_000;
 
-export const aiConfigured = () => !!Deno.env.get("ANTHROPIC_API_KEY");
+// DeepSeek: peak-hour list prices per million tokens, so the logged cost is an upper
+// estimate (off-peak hours cost half). Unknown models are logged at the "pro" price.
+const DEEPSEEK_URL = "https://api.deepseek.com/chat/completions";
+const DEEPSEEK_PRICE: Record<string, { input: number; output: number }> = {
+  "deepseek-v4-pro": { input: 1.32, output: 3.96 },
+  "deepseek-flash": { input: 0.3, output: 1.2 },
+};
+const deepseekModel = () => Deno.env.get("DEEPSEEK_MODEL") || "deepseek-v4-pro";
+
+export const aiProvider = (): "deepseek" | "claude" | null =>
+  Deno.env.get("DEEPSEEK_API_KEY") ? "deepseek" : Deno.env.get("ANTHROPIC_API_KEY") ? "claude" : null;
+export const aiConfigured = () => aiProvider() !== null;
 
 async function symbolEvidence(
   db: SupabaseClient,
@@ -101,9 +117,87 @@ export interface Verdict {
   cost: NonNullable<AiState["cost"]>;
 }
 
-export async function askAi(evidence: Evidence, symbols: string[]): Promise<Verdict> {
-  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!apiKey) throw new Error("The AI is not set up yet: the server has no ANTHROPIC_API_KEY (see README).");
+export function askAi(evidence: Evidence, symbols: string[]): Promise<Verdict> {
+  const provider = aiProvider();
+  if (provider === "deepseek") return askDeepSeek(evidence, symbols);
+  if (provider === "claude") return askClaude(evidence, symbols);
+  throw new Error("The AI is not set up yet: the server has no DEEPSEEK_API_KEY (see README).");
+}
+
+function finish(json: unknown, symbols: string[], inTok: number, outTok: number, price: { input: number; output: number }): Verdict {
+  const parsed = parseDecisions(json, symbols);
+  if (!parsed.decisions.length) throw new Error("The AI returned no usable decisions. No trades were made.");
+  return {
+    ...parsed,
+    cost: { inputTokens: inTok, outputTokens: outTok, usd: estimateUsd(inTok, outTok, price.input, price.output) },
+  };
+}
+
+async function askDeepSeek(evidence: Evidence, symbols: string[]): Promise<Verdict> {
+  const apiKey = Deno.env.get("DEEPSEEK_API_KEY")!;
+  const model = deepseekModel();
+  const body = JSON.stringify({
+    model,
+    stream: false,
+    max_tokens: 16000,
+    reasoning_effort: "high",
+    // DeepSeek guarantees valid JSON, not a particular shape; the shape is described in
+    // the prompt and every field is validated afterwards.
+    response_format: { type: "json_object" },
+    messages: [
+      { role: "system", content: `${SYSTEM_PROMPT}\n\n${jsonInstructions(symbols)}` },
+      { role: "user", content: buildUserMessage(evidence) },
+    ],
+  });
+  const deadline = Date.now() + 110_000;
+  let inTok = 0;
+  let outTok = 0;
+  // DeepSeek documents that JSON mode can occasionally return blank content; ask once more then.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const left = deadline - Date.now();
+    if (left < 15_000) break;
+    let res: Response;
+    try {
+      res = await fetch(DEEPSEEK_URL, {
+        method: "POST",
+        headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+        body,
+        signal: AbortSignal.timeout(left),
+      });
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "TimeoutError") throw new Error("The AI took too long to answer; it will be tried again later.");
+      throw new Error("Could not reach the AI service; it will be tried again later.");
+    }
+    if (!res.ok) {
+      await res.body?.cancel();
+      if (res.status === 401) throw new Error("DeepSeek rejected the API key. Check DEEPSEEK_API_KEY.");
+      if (res.status === 402) throw new Error("Your DeepSeek account has no balance left. Top it up to continue.");
+      if (res.status === 429) throw new Error("DeepSeek is rate-limiting this account; it will be tried again later.");
+      if (res.status === 400 || res.status === 422) throw new Error(`DeepSeek did not accept the request (error ${res.status}).`);
+      throw new Error(`DeepSeek is having problems (error ${res.status}); it will be tried again later.`);
+    }
+    // deno-lint-ignore no-explicit-any
+    const data: any = await res.json();
+    inTok += Number(data?.usage?.prompt_tokens ?? 0);
+    outTok += Number(data?.usage?.completion_tokens ?? 0);
+    const choice = data?.choices?.[0];
+    if (choice?.finish_reason === "length") throw new Error("The AI's answer was cut off. No trades were made.");
+    if (choice?.finish_reason === "content_filter") throw new Error("The AI declined to assess this request. No trades were made.");
+    const text = String(choice?.message?.content ?? "").trim();
+    if (!text) continue;
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error("The AI's answer could not be read. No trades were made.");
+    }
+    return finish(json, symbols, inTok, outTok, DEEPSEEK_PRICE[model] ?? DEEPSEEK_PRICE["deepseek-v4-pro"]);
+  }
+  throw new Error("The AI returned an empty answer. No trades were made; it will be tried again later.");
+}
+
+async function askClaude(evidence: Evidence, symbols: string[]): Promise<Verdict> {
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY")!;
   // One attempt, bounded in time: the scheduler will simply try again later.
   const client = new Anthropic({ apiKey, maxRetries: 0, timeout: 110_000 });
 
@@ -141,15 +235,9 @@ export async function askAi(evidence: Evidence, symbols: string[]): Promise<Verd
   } catch {
     throw new Error("The AI's answer could not be read. No trades were made.");
   }
-  const parsed = parseDecisions(json, symbols);
-  if (!parsed.decisions.length) throw new Error("The AI returned no usable decisions. No trades were made.");
   const inTok = response.usage.input_tokens + (response.usage.cache_read_input_tokens ?? 0) +
     (response.usage.cache_creation_input_tokens ?? 0);
-  const outTok = response.usage.output_tokens;
-  return {
-    ...parsed,
-    cost: { inputTokens: inTok, outputTokens: outTok, usd: estimateUsd(inTok, outTok, LIST_PRICE.input, LIST_PRICE.output) },
-  };
+  return finish(json, symbols, inTok, response.usage.output_tokens, LIST_PRICE);
 }
 
 /**
@@ -185,7 +273,7 @@ export async function consultAi(
       verdict,
       events: [{
         type: "info",
-        message: `AI read ${evidence.symbols.reduce((a, s) => a + s.newswire.length + s.otherOutlets.length, 0)} articles for ${evidence.symbols.length} symbols (about $${
+        message: `AI read ${evidence.symbols.reduce((a, s) => a + s.newswire.length + s.otherOutlets.length, 0)} articles for ${evidence.symbols.length} symbols (at most about $${
           verdict.cost.usd.toFixed(3)
         } of AI usage). ${verdict.view}`,
       }],

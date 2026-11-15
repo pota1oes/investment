@@ -510,7 +510,7 @@ const actions: Record<string, (ctx: Ctx, b: Body) => Promise<unknown>> = {
     if (status === "running") {
       requireLive2fa(ctx, bot.env);
       if (bot.config.strategy.id === "ai" && !aiConfigured()) {
-        throw bad("The AI is not set up yet: add your Anthropic API key to the server first (see README).");
+        throw bad("The AI is not set up yet: add your DeepSeek API key to the server first (see README).");
       }
       const a = await trade(bot.env, await creds(ctx, bot.env), "/v2/account");
       if (bot.state.cash > Number(a.cash)) {
