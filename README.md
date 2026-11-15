@@ -52,6 +52,8 @@ You do these steps yourself — they involve creating accounts and handling secr
    afterwards — saved broker keys could no longer be decrypted (you would reconnect them).
    Optional, for European end-of-day prices: get a free key at alphavantage.co and run
    `npx supabase secrets set ALPHAVANTAGE_KEY=...` (free tier: about 25 lookups a day).
+   Optional, for company facts on stock pages (market value, P/E, earnings dates, analyst
+   ratings): get a free key at finnhub.io and run `npx supabase secrets set FINNHUB_KEY=...`.
 4. Open `supabase/cron.sql`, fill in the two placeholders, and run it in the SQL editor.
 
 ### 2. GitHub Pages (the website)
@@ -80,6 +82,12 @@ You do these steps yourself — they involve creating accounts and handling secr
 - The Supabase URL and anon key are public on purpose; they grant nothing without a login.
 
 ## Auto-trader rules
+
+- Default algorithm, **momentum rotation**: ranks the symbols on a list by their rise over a
+  lookback period (about 6 months by default), holds only the strongest few while each is
+  above its own long-term average, and waits in cash when nothing qualifies. Trend
+  following, buy-the-dip and breakout rules are also available.
+- Ready-made setups on the Auto-trader page are examples to test, not recommendations.
 
 - A bot only uses its own budget and only sells what it bought itself.
 - Signals use completed price bars only; stock orders are placed only while the market is open.

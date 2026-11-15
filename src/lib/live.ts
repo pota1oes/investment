@@ -41,6 +41,7 @@ export const liveApi: Api = {
   quotes: (symbols) => (symbols.length ? call("quotes", { symbols }) : Promise.resolve({})),
   news: (symbols, limit, name) => call("news", { symbols, limit, name }),
   search: (q, market) => call("search", { q, market }),
+  company: (symbol) => call("company", { symbol }),
 
   // Watchlist and bot reads go straight to the database; row-level security
   // guarantees a user only ever sees their own rows.

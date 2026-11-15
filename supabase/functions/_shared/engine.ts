@@ -5,10 +5,12 @@
 import {
   type Bar,
   completedBars,
-  computeSignals,
   minBars,
   normalizeStrategy,
+  portfolioSignals,
+  type Signal,
   type StrategyConfig,
+  strategySlots,
   type Timeframe,
 } from "./strategy.ts";
 
@@ -38,6 +40,7 @@ export interface BotState {
   blocked: Record<string, boolean>; // symbols stopped out, waiting for a fresh setup
   realizedPnl: number;
   equity: number; // last computed value of the bot
+  waiting?: Record<string, boolean>; // symbols already reported as lacking price history
 }
 
 export interface BrokerPort {
@@ -257,49 +260,74 @@ export async function runBot(
     return { state, events, halted: true };
   }
 
-  for (const symbol of universe) {
+  // Signals for the configured symbols, computed together so that strategies which
+  // compare symbols with each other (momentum rotation) see the whole list.
+  const usable: Record<string, Bar[]> = {};
+  state.waiting ??= {};
+  for (const symbol of cfg.symbols) {
     const bars = data[symbol];
     if (!bars) continue;
-    if (state.pending.some((p) => p.symbol === symbol)) continue; // wait for the open order
-    if (!tradable(symbol)) continue;
-    const pos = state.positions[symbol];
-    const inConfig = cfg.symbols.includes(symbol);
-
-    try {
-      if (pos && !inConfig) {
-        await sell(symbol, "removed from bot", state, broker, events);
-        continue;
-      }
-      if (bars.length < need) {
+    if (bars.length < need) {
+      if (!state.waiting[symbol]) {
+        state.waiting[symbol] = true;
         events.push({
           type: "info",
           symbol,
-          message: `Only ${bars.length} of ${need} price bars available; waiting.`,
+          message: `Only ${bars.length} of ${need} price bars available; skipping until there are more.`,
         });
-        continue;
       }
-      const signals = computeSignals(cfg.strategy, bars);
-      const signal = signals[signals.length - 1];
-      const price = bars[bars.length - 1].c;
-      if (signal === "flat") state.blocked[symbol] = false;
+      continue;
+    }
+    delete state.waiting[symbol];
+    usable[symbol] = bars;
+  }
+  const allSignals = portfolioSignals(cfg.strategy, usable);
+  const signalOf = (s: string): Signal | undefined => allSignals[s]?.at(-1);
+  const slots = strategySlots(cfg.strategy, cfg.symbols.length);
+  const busy = (s: string) => state.pending.some((p) => p.symbol === s);
 
-      if (pos && cfg.stopLossPct > 0 && price <= pos.avgPrice * (1 - cfg.stopLossPct / 100)) {
+  // Pass 1: exits (removed symbols, stop-losses, sell signals).
+  for (const symbol of universe) {
+    const pos = state.positions[symbol];
+    const signal = signalOf(symbol);
+    if (signal === "flat") state.blocked[symbol] = false;
+    if (!pos || busy(symbol) || !tradable(symbol)) continue;
+    try {
+      const price = data[symbol]?.at(-1)?.c;
+      if (!cfg.symbols.includes(symbol)) {
+        await sell(symbol, "removed from bot", state, broker, events);
+      } else if (
+        price != null && cfg.stopLossPct > 0 && price <= pos.avgPrice * (1 - cfg.stopLossPct / 100)
+      ) {
         state.blocked[symbol] = true;
         await sell(symbol, "stop-loss", state, broker, events);
-      } else if (pos && signal === "flat") {
+      } else if (signal === "flat") {
         await sell(symbol, "signal", state, broker, events);
-      } else if (!pos && signal === "long" && !state.blocked[symbol]) {
-        const target = state.equity / cfg.symbols.length;
-        const notional = Math.floor(Math.min(state.cash, target) * 100) / 100;
-        if (notional >= MIN_ORDER_USD) {
-          const { id } = await broker.placeOrder({ symbol, side: "buy", notional });
-          state.cash -= notional;
-          state.pending.push({ id, symbol, side: "buy", notional, reason: "signal" });
-          events.push({ type: "order", symbol, message: `Buy order for ${money(notional)} (signal)` });
-        }
       }
     } catch (e) {
       events.push({ type: "error", symbol, message: msg(e) });
+    }
+  }
+
+  // Pass 2: entries. Wait while any sale is still settling, so the freed cash is
+  // available and a rotation never buys a half-sized position.
+  if (!state.pending.some((p) => p.side === "sell")) {
+    const wanted = cfg.symbols.filter((s) =>
+      signalOf(s) === "long" && !state.positions[s] && !state.blocked[s] && !busy(s) && tradable(s)
+    );
+    for (const symbol of wanted) {
+      try {
+        const target = state.equity / slots;
+        const notional = Math.floor(Math.min(state.cash, target) * 100) / 100;
+        // Skip scraps: a position far below its intended size is not worth opening.
+        if (notional < MIN_ORDER_USD || notional < target * 0.5) continue;
+        const { id } = await broker.placeOrder({ symbol, side: "buy", notional });
+        state.cash -= notional;
+        state.pending.push({ id, symbol, side: "buy", notional, reason: "signal" });
+        events.push({ type: "order", symbol, message: `Buy order for ${money(notional)} (signal)` });
+      } catch (e) {
+        events.push({ type: "error", symbol, message: msg(e) });
+      }
     }
   }
   return { state, events, halted: false };

@@ -2,12 +2,14 @@ import type { Session } from "@supabase/supabase-js";
 import { useEffect, useMemo, useState } from "react";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { Search } from "./components/common.tsx";
+import { Icon } from "./components/ui.tsx";
 import { EnvContext, useAsync } from "./hooks.tsx";
 import { api, hasBackend, isDemo, setFakeMoney } from "./lib/api.ts";
 import { supabase } from "./lib/supabase.ts";
 import type { Env } from "./lib/types.ts";
 import { Bots } from "./pages/Bots.tsx";
 import { Dashboard } from "./pages/Dashboard.tsx";
+import { Learn } from "./pages/Learn.tsx";
 import { Login, MfaChallenge } from "./pages/Login.tsx";
 import { Markets } from "./pages/Markets.tsx";
 import { News } from "./pages/News.tsx";
@@ -62,12 +64,13 @@ export function App() {
 }
 
 const NAV = [
-  ["/", "Dashboard"],
-  ["/markets", "Markets"],
-  ["/portfolio", "Portfolio"],
-  ["/bots", "Auto-trader"],
-  ["/news", "News"],
-  ["/settings", "Settings"],
+  ["/", "Home", "home"],
+  ["/markets", "Markets", "markets"],
+  ["/portfolio", "Portfolio", "portfolio"],
+  ["/bots", "Auto-trader", "bot"],
+  ["/news", "News", "news"],
+  ["/learn", "Learn", "learn"],
+  ["/settings", "Settings", "settings"],
 ] as const;
 
 function Shell({ email }: { email: string | null }) {
@@ -101,11 +104,12 @@ function Shell({ email }: { email: string | null }) {
     <EnvContext.Provider value={ctx}>
       <div className={`app ${env === "live" ? "is-live" : ""}`}>
         <aside className="side">
-          <div className="brand">Invest</div>
+          <div className="brand"><span className="brand-mark" aria-hidden />Invest</div>
           <nav>
-            {NAV.map(([to, label]) => (
+            {NAV.map(([to, label, icon]) => (
               <NavLink key={to} to={to} end={to === "/"}>
-                {label}
+                <Icon name={icon} />
+                <span>{label}</span>
               </NavLink>
             ))}
           </nav>
@@ -164,6 +168,7 @@ function Shell({ email }: { email: string | null }) {
               <Route path="/portfolio" element={<Portfolio />} />
               <Route path="/bots" element={<Bots />} />
               <Route path="/news" element={<News />} />
+              <Route path="/learn" element={<Learn />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="*" element={<p className="empty">Page not found.</p>} />
             </Routes>

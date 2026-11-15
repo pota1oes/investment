@@ -12,21 +12,38 @@ import {
 import { TIMEFRAME_MS } from "../../supabase/functions/_shared/strategy.ts";
 import type { Api, Asset, Bar, Bot, BotLogEntry, Order, Position, Timeframe, WatchItem } from "./types.ts";
 
-const UNIVERSE: (Asset & { base: number; vol: number })[] = [
-  { symbol: "AAPL", name: "Apple Inc.", exchange: "NASDAQ", market: "us", tradable: true, base: 230, vol: 0.016 },
-  { symbol: "MSFT", name: "Microsoft Corporation", exchange: "NASDAQ", market: "us", tradable: true, base: 480, vol: 0.014 },
-  { symbol: "NVDA", name: "NVIDIA Corporation", exchange: "NASDAQ", market: "us", tradable: true, base: 160, vol: 0.028 },
-  { symbol: "AMZN", name: "Amazon.com Inc.", exchange: "NASDAQ", market: "us", tradable: true, base: 220, vol: 0.019 },
-  { symbol: "GOOGL", name: "Alphabet Inc. Class A", exchange: "NASDAQ", market: "us", tradable: true, base: 190, vol: 0.018 },
-  { symbol: "TSLA", name: "Tesla Inc.", exchange: "NASDAQ", market: "us", tradable: true, base: 340, vol: 0.035 },
-  { symbol: "SPY", name: "SPDR S&P 500 ETF", exchange: "ARCA", market: "us", tradable: true, base: 640, vol: 0.009 },
-  { symbol: "QQQ", name: "Invesco QQQ ETF", exchange: "NASDAQ", market: "us", tradable: true, base: 560, vol: 0.012 },
-  { symbol: "ASML.AMS", name: "ASML Holding NV", exchange: "Amsterdam", market: "eu", tradable: false, base: 690, vol: 0.02 },
-  { symbol: "SAP.DEX", name: "SAP SE", exchange: "XETRA", market: "eu", tradable: false, base: 250, vol: 0.015 },
-  { symbol: "MC.PAR", name: "LVMH Moët Hennessy", exchange: "Paris", market: "eu", tradable: false, base: 560, vol: 0.018 },
-  { symbol: "BTC/USD", name: "Bitcoin", exchange: "Crypto", market: "crypto", tradable: true, base: 98000, vol: 0.03 },
-  { symbol: "ETH/USD", name: "Ethereum", exchange: "Crypto", market: "crypto", tradable: true, base: 3400, vol: 0.04 },
+type Row = [string, string, string, Asset["market"], number, number];
+const ROWS: Row[] = [
+  ["AAPL", "Apple Inc.", "NASDAQ", "us", 230, 0.016],
+  ["MSFT", "Microsoft Corporation", "NASDAQ", "us", 480, 0.014],
+  ["NVDA", "NVIDIA Corporation", "NASDAQ", "us", 160, 0.028],
+  ["AMZN", "Amazon.com Inc.", "NASDAQ", "us", 220, 0.019],
+  ["GOOGL", "Alphabet Inc. Class A", "NASDAQ", "us", 190, 0.018],
+  ["META", "Meta Platforms Inc.", "NASDAQ", "us", 640, 0.021],
+  ["TSLA", "Tesla Inc.", "NASDAQ", "us", 340, 0.035],
+  ["JPM", "JPMorgan Chase & Co.", "NYSE", "us", 290, 0.014],
+  ["JNJ", "Johnson & Johnson", "NYSE", "us", 165, 0.01],
+  ["XOM", "Exxon Mobil Corporation", "NYSE", "us", 115, 0.014],
+  ["WMT", "Walmart Inc.", "NYSE", "us", 100, 0.011],
+  ["KO", "The Coca-Cola Company", "NYSE", "us", 70, 0.009],
+  ["SPY", "SPDR S&P 500 ETF (500 largest US companies)", "ARCA", "us", 640, 0.009],
+  ["QQQ", "Invesco QQQ ETF (Nasdaq 100)", "NASDAQ", "us", 560, 0.012],
+  ["DIA", "SPDR Dow Jones Industrial Average ETF", "ARCA", "us", 450, 0.008],
+  ["IWM", "iShares Russell 2000 ETF (small US companies)", "ARCA", "us", 225, 0.013],
+  ["EFA", "iShares MSCI EAFE ETF (developed markets outside the US)", "ARCA", "us", 88, 0.009],
+  ["EEM", "iShares MSCI Emerging Markets ETF", "ARCA", "us", 48, 0.011],
+  ["TLT", "iShares 20+ Year Treasury Bond ETF", "NASDAQ", "us", 90, 0.009],
+  ["GLD", "SPDR Gold Shares", "ARCA", "us", 310, 0.009],
+  ["VNQ", "Vanguard Real Estate ETF", "ARCA", "us", 92, 0.011],
+  ["ASML.AMS", "ASML Holding NV", "Amsterdam", "eu", 690, 0.02],
+  ["SAP.DEX", "SAP SE", "XETRA", "eu", 250, 0.015],
+  ["MC.PAR", "LVMH Moët Hennessy", "Paris", "eu", 560, 0.018],
+  ["BTC/USD", "Bitcoin", "Crypto", "crypto", 98000, 0.03],
+  ["ETH/USD", "Ethereum", "Crypto", "crypto", 3400, 0.04],
 ];
+const UNIVERSE: (Asset & { base: number; vol: number })[] = ROWS.map(
+  ([symbol, name, exchange, market, base, vol]) => ({ symbol, name, exchange, market, tradable: market !== "eu", base, vol }),
+);
 const DAY = 86_400_000;
 
 function rng(seed: string) {
@@ -48,10 +65,12 @@ const info = (symbol: string) => {
 
 const cache = new Map<string, Bar[]>();
 /** Walks backwards from the asset's base price so the latest price is stable. */
-function series(symbol: string, tf: Timeframe, n: number): Bar[] {
+function series(symbol: string, tf: Timeframe, want: number): Bar[] {
   const key = `${symbol}|${tf}`;
   const hit = cache.get(key);
-  if (hit && hit.length >= n) return hit.slice(-n);
+  if (hit && hit.length >= want) return hit.slice(-want);
+  // Always build the same long history, so every chart and test sees identical prices.
+  const n = Math.max(want, 1000);
   const a = info(symbol);
   const r = rng(key);
   const step = TIMEFRAME_MS[tf];
@@ -81,7 +100,7 @@ function series(symbol: string, tf: Timeframe, n: number): Bar[] {
     return { t: times[i], o: open, h: hi, l: lo, c: close, v: Math.round(1e6 * (0.5 + r())) };
   });
   cache.set(key, bars);
-  return bars;
+  return bars.slice(-want);
 }
 const price = (symbol: string) => info(symbol).base;
 
@@ -248,6 +267,7 @@ export const demoApi: Api = {
     const Q = q.trim().toUpperCase();
     return wait(UNIVERSE.filter((u) => (market === "eu") === (u.market === "eu") && (u.symbol.startsWith(Q) || u.name.toUpperCase().includes(Q))));
   },
+  company: () => wait(null),
   watchlist: () => wait(state.watchlist),
   async addWatch(item) {
     if (!state.watchlist.some((w) => w.symbol === item.symbol)) state.watchlist.push(item);

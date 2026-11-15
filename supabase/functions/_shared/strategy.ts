@@ -11,7 +11,7 @@ export interface Bar {
 }
 
 export type Signal = "long" | "flat" | "hold";
-export type StrategyId = "sma_cross" | "rsi_reversion" | "breakout";
+export type StrategyId = "momentum" | "sma_cross" | "rsi_reversion" | "breakout";
 export type Timeframe = "15Min" | "1Hour" | "1Day";
 
 export interface StrategyConfig {
@@ -29,8 +29,19 @@ export interface ParamSpec {
 
 export const STRATEGIES: Record<
   StrategyId,
-  { name: string; description: string; params: ParamSpec[] }
+  { name: string; description: string; params: ParamSpec[]; portfolio?: boolean }
 > = {
+  momentum: {
+    name: "Momentum rotation (hold the strongest few)",
+    description:
+      "Ranks everything on the list by how much it rose over the lookback period and holds only the strongest few, each only while it is above its own long-term average. When nothing qualifies, it waits in cash.",
+    portfolio: true,
+    params: [
+      { key: "lookback", label: "Lookback (bars)", default: 126, min: 5, max: 300 },
+      { key: "topN", label: "How many to hold", default: 3, min: 1, max: 10 },
+      { key: "trend", label: "Long-term average (bars)", default: 100, min: 2, max: 300 },
+    ],
+  },
   sma_cross: {
     name: "Trend following (moving-average cross)",
     description:
@@ -92,6 +103,8 @@ export function normalizeStrategy(cfg: StrategyConfig): StrategyConfig {
 export function minBars(cfg: StrategyConfig): number {
   const p = normalizeStrategy(cfg).params;
   switch (cfg.id) {
+    case "momentum":
+      return Math.max(p.lookback + 1, p.trend);
     case "sma_cross":
       return p.slow;
     case "rsi_reversion":
@@ -143,6 +156,9 @@ export function computeSignals(config: StrategyConfig, bars: Bar[]): Signal[] {
   const closes = bars.map((b) => b.c);
   const out: Signal[] = new Array(bars.length).fill("hold");
   switch (cfg.id) {
+    case "momentum":
+      // Needs every symbol at once; see portfolioSignals(). On its own a symbol only "holds".
+      break;
     case "sma_cross": {
       const f = sma(closes, p.fast);
       const s = sma(closes, p.slow);
@@ -291,5 +307,217 @@ export function backtest(
     buyHoldReturnPct: bars.length > 1 ? (bars[bars.length - 1].c / bars[0].o - 1) * 100 : 0,
     maxDrawdownPct: maxDd * 100,
     winRatePct: trades.length ? (wins / trades.length) * 100 : 0,
+  };
+}
+
+// --- Portfolio level ---------------------------------------------------------
+
+/** How many positions the budget is divided over. */
+export function strategySlots(config: StrategyConfig, symbolCount: number): number {
+  const cfg = normalizeStrategy(config);
+  const n = cfg.id === "momentum" ? Math.min(cfg.params.topN, symbolCount) : symbolCount;
+  return Math.max(1, n);
+}
+
+/**
+ * Signals for a whole list of symbols, each aligned to that symbol's own bars.
+ * Single-symbol strategies are computed independently. Momentum rotation compares
+ * the symbols with each other at every point in time, using only data up to then:
+ *   long = among the strongest `topN`, rising, and above its long-term average
+ *   hold = just outside the top (keep if already owned, but do not buy)
+ *   flat = everything else
+ */
+export function portfolioSignals(
+  config: StrategyConfig,
+  data: Record<string, Bar[]>,
+): Record<string, Signal[]> {
+  const cfg = normalizeStrategy(config);
+  const symbols = Object.keys(data).sort();
+  if (cfg.id !== "momentum") {
+    return Object.fromEntries(symbols.map((s) => [s, computeSignals(cfg, data[s])]));
+  }
+  const { lookback, topN, trend } = cfg.params;
+  const prep = symbols.map((symbol) => {
+    const bars = data[symbol];
+    const closes = bars.map((b) => b.c);
+    return {
+      symbol,
+      bars,
+      closes,
+      avg: sma(closes, trend),
+      i: -1,
+      fresh: false,
+      out: new Array<Signal>(bars.length).fill("hold"),
+    };
+  });
+  const times = [...new Set(prep.flatMap((p) => p.bars.map((b) => b.t)))].sort((a, b) => a - b);
+  for (const t of times) {
+    const scored: { p: (typeof prep)[number]; mom: number; ok: boolean }[] = [];
+    for (const p of prep) {
+      const before = p.i;
+      while (p.i + 1 < p.bars.length && p.bars[p.i + 1].t <= t) p.i++;
+      p.fresh = p.i !== before;
+      const avg = p.avg[p.i];
+      if (p.i >= lookback && avg != null) {
+        const mom = p.closes[p.i] / p.closes[p.i - lookback] - 1;
+        scored.push({ p, mom, ok: mom > 0 && p.closes[p.i] > avg });
+      }
+    }
+    scored.sort((a, b) => b.mom - a.mom || a.p.symbol.localeCompare(b.p.symbol));
+    scored.forEach((x, rank) => {
+      if (!x.p.fresh) return;
+      x.p.out[x.p.i] = !x.ok ? "flat" : rank < topN ? "long" : rank < topN + 1 ? "hold" : "flat";
+    });
+  }
+  return Object.fromEntries(prep.map((p) => [p.symbol, p.out]));
+}
+
+export interface PortfolioTrade extends BacktestTrade {
+  symbol: string;
+  profit: number;
+}
+
+export interface PortfolioBacktest {
+  equity: { t: number; value: number }[];
+  trades: PortfolioTrade[];
+  perSymbol: Record<string, { trades: number; profit: number }>;
+  totalReturnPct: number;
+  /** Buying every symbol in equal parts at the start and never selling. */
+  benchmarkReturnPct: number;
+  maxDrawdownPct: number;
+  winRatePct: number;
+  finalValue: number;
+  /** Share of the time the strategy had money invested. */
+  investedPct: number;
+}
+
+/**
+ * Simulates a bot over several symbols sharing one budget, sized like the live
+ * engine (budget split over `strategySlots`). Signals are read at a bar's close
+ * and acted on at that symbol's next open. Measurement starts once the strategy
+ * has enough history to produce signals, so the comparison with the benchmark is fair.
+ */
+export function backtestPortfolio(
+  config: StrategyConfig,
+  data: Record<string, Bar[]>,
+  opts: BacktestOptions,
+): PortfolioBacktest {
+  const symbols = Object.keys(data).filter((s) => data[s].length > 0).sort();
+  const signals = portfolioSignals(config, data);
+  const slots = strategySlots(config, symbols.length);
+  const need = minBars(config);
+  const fee = opts.feeBps / 10_000;
+
+  const starts = symbols.map((s) => data[s][Math.min(need, data[s].length) - 1].t);
+  const startT = starts.length ? Math.min(...starts) : 0;
+  const times = [...new Set(symbols.flatMap((s) => data[s].map((b) => b.t)))]
+    .filter((t) => t >= startT)
+    .sort((a, b) => a - b);
+
+  let cash = opts.cash;
+  const pos: Record<string, { qty: number; entry: number; entryT: number }> = {};
+  const blocked: Record<string, boolean> = {};
+  const idx: Record<string, number> = {};
+  const last: Record<string, number> = {};
+  const bench: Record<string, number> = {}; // units held by the buy-and-hold benchmark
+  for (const s of symbols) idx[s] = -1;
+
+  const equity: { t: number; value: number }[] = [];
+  const trades: PortfolioTrade[] = [];
+  const perSymbol: Record<string, { trades: number; profit: number }> = Object.fromEntries(
+    symbols.map((s) => [s, { trades: 0, profit: 0 }]),
+  );
+  let investedSteps = 0;
+
+  const close = (s: string, price: number, t: number, reason: BacktestTrade["reason"]) => {
+    const p = pos[s];
+    const net = price * (1 - fee);
+    const profit = (net - p.entry) * p.qty;
+    cash += p.qty * net;
+    trades.push({
+      symbol: s,
+      entryT: p.entryT,
+      entryPrice: p.entry,
+      exitT: t,
+      exitPrice: price,
+      returnPct: (net / p.entry - 1) * 100,
+      profit,
+      reason,
+    });
+    perSymbol[s].trades++;
+    perSymbol[s].profit += profit;
+    delete pos[s];
+  };
+
+  for (const t of times) {
+    const active: string[] = [];
+    for (const s of symbols) {
+      const bars = data[s];
+      let moved = false;
+      while (idx[s] + 1 < bars.length && bars[idx[s] + 1].t <= t) {
+        idx[s]++;
+        moved = true;
+      }
+      if (moved && bars[idx[s]].t === t) active.push(s);
+    }
+    const prev = (s: string): Signal => (idx[s] > 0 ? signals[s][idx[s] - 1] : "hold");
+    const bar = (s: string) => data[s][idx[s]];
+
+    for (const s of active) {
+      if (bench[s] === undefined) bench[s] = opts.cash / symbols.length / bar(s).o;
+      if (prev(s) === "flat") blocked[s] = false;
+    }
+    // Sells first, so the cash they free up can be used for buys on the same bar.
+    for (const s of active) if (pos[s] && prev(s) === "flat") close(s, bar(s).o, t, "signal");
+    for (const s of active) {
+      if (pos[s] || prev(s) !== "long" || blocked[s]) continue;
+      const value = cash +
+        Object.entries(pos).reduce((a, [k, p]) => a + p.qty * (active.includes(k) ? bar(k).o : last[k]), 0);
+      const spend = Math.min(cash, value / slots);
+      if (spend < Math.max(1, opts.cash * 0.01)) continue;
+      const cost = bar(s).o * (1 + fee);
+      pos[s] = { qty: spend / cost, entry: cost, entryT: t };
+      cash -= spend;
+    }
+    for (const s of active) {
+      const p = pos[s];
+      if (p && opts.stopLossPct > 0) {
+        const stop = p.entry * (1 - opts.stopLossPct / 100);
+        if (bar(s).l <= stop) {
+          close(s, Math.min(bar(s).o, stop), t, "stop");
+          blocked[s] = true;
+        }
+      }
+      last[s] = bar(s).c;
+    }
+    if (Object.keys(pos).length) investedSteps++;
+    equity.push({ t, value: cash + Object.entries(pos).reduce((a, [k, p]) => a + p.qty * last[k], 0) });
+  }
+
+  const endT = times.length ? times[times.length - 1] : 0;
+  for (const s of Object.keys(pos)) close(s, last[s], endT, "end");
+  if (equity.length) equity[equity.length - 1].value = cash;
+
+  let peak = opts.cash;
+  let maxDd = 0;
+  for (const e of equity) {
+    peak = Math.max(peak, e.value);
+    if (peak > 0) maxDd = Math.max(maxDd, (peak - e.value) / peak);
+  }
+  const benchFinal = symbols.reduce(
+    (a, s) => a + (bench[s] !== undefined ? bench[s] * last[s] : opts.cash / symbols.length),
+    0,
+  );
+  const wins = trades.filter((x) => x.returnPct > 0).length;
+  return {
+    equity,
+    trades,
+    perSymbol,
+    finalValue: cash,
+    totalReturnPct: (cash / opts.cash - 1) * 100,
+    benchmarkReturnPct: symbols.length ? (benchFinal / opts.cash - 1) * 100 : 0,
+    maxDrawdownPct: maxDd * 100,
+    winRatePct: trades.length ? (wins / trades.length) * 100 : 0,
+    investedPct: equity.length ? (investedSteps / equity.length) * 100 : 0,
   };
 }

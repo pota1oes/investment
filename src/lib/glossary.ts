@@ -1,0 +1,47 @@
+export interface Entry {
+  term: string;
+  text: string;
+}
+
+// Plain-language explanations, shown as tooltips next to the terms and listed on the Learn page.
+export const GLOSSARY: Record<string, Entry> = {
+  stock: { term: "Stock (share)", text: "A small piece of ownership in a company. If the company becomes more valuable, the share price usually rises; it can also fall to zero." },
+  etf: { term: "ETF (fund)", text: "A basket of many stocks or bonds that you buy as one share. For example, an S&P 500 ETF holds the 500 largest US companies at once." },
+  crypto: { term: "Crypto", text: "Digital coins such as Bitcoin. They trade day and night and their prices swing far more than most stocks." },
+  portfolio: { term: "Portfolio", text: "Everything you own in this account added together: your investments plus your cash." },
+  cash: { term: "Cash", text: "Money in the account that is not invested yet." },
+  buyingPower: { term: "Buying power", text: "How much you can spend on new purchases right now. Usually the same as your cash." },
+  dayChange: { term: "Today", text: "How much the value changed since the market last closed." },
+  unrealized: { term: "Gain / loss", text: "What you would make or lose if you sold now. It only becomes real when you actually sell." },
+  avgCost: { term: "Average cost", text: "The average price you paid per share, across all your purchases." },
+  market: { term: "Market order", text: "Buy or sell right away at the best price available. Simple and fast, but the exact price can differ slightly from what you saw." },
+  limit: { term: "Limit order", text: "Only buy at your price or lower (or sell at your price or higher). You control the price, but the order may never be filled." },
+  stop: { term: "Stop order", text: "Waits until the price reaches a level you set, then sells (or buys) at the market price. Often used to cap a loss." },
+  stopLimit: { term: "Stop-limit order", text: "Like a stop order, but once triggered it becomes a limit order, so it will not fill at a worse price than you allow." },
+  fakeMoney: { term: "Fake money", text: "A built-in practice mode with pretend cash and made-up prices. Nothing you do there is real." },
+  paper: { term: "Paper trading", text: "A practice account at the broker: pretend cash, but real market prices. The best way to try things before using real money." },
+  volume: { term: "Volume", text: "How many shares changed hands. High volume means lots of people are trading it." },
+  week52: { term: "52-week range", text: "The lowest and highest price over the last year, and where today's price sits between them." },
+  movingAverage: { term: "Moving average", text: "The average price over the last N days. It smooths out daily noise so you can see the general direction." },
+  rsi: { term: "RSI", text: "A 0–100 score of how one-sided recent price moves were. Above 70 is called “overbought”, below 30 “oversold”. It describes the past, not the future." },
+  volatility: { term: "Volatility", text: "How much the price jumps around. Higher volatility means bigger swings, in both directions." },
+  drawdown: { term: "Biggest drop", text: "The largest fall from a high point to a later low point. It shows how painful the worst stretch was." },
+  marketCap: { term: "Market value", text: "What the whole company is worth on the stock market: share price × number of shares." },
+  pe: { term: "P/E ratio", text: "Share price divided by yearly profit per share. A P/E of 20 means investors pay $20 for every $1 the company earns in a year." },
+  eps: { term: "Earnings per share", text: "The company's yearly profit divided by its number of shares." },
+  dividendYield: { term: "Dividend yield", text: "The yearly cash payout to shareholders as a percentage of the share price. Not every company pays one." },
+  beta: { term: "Beta", text: "How strongly it moves with the overall market. 1 means in step with it; 1.5 means about 50% bigger moves; below 1 means calmer." },
+  profitMargin: { term: "Profit margin", text: "How much of each dollar of sales is left as profit." },
+  revenueGrowth: { term: "Sales growth", text: "How much sales grew compared with a year earlier." },
+  analysts: { term: "Analyst ratings", text: "Opinions published by professional analysts at banks and brokers. They are often wrong and are not advice for you." },
+  earnings: { term: "Earnings report", text: "Every three months a company publishes its results. The share price often moves sharply on that day." },
+  diversification: { term: "Diversification", text: "Spreading money over many different investments so one bad one cannot sink everything." },
+  bot: { term: "Bot", text: "A program that buys and sells for you by following fixed rules, without emotions and without asking each time." },
+  budget: { term: "Budget", text: "The most money a bot may have invested. It can never spend more than this." },
+  momentum: { term: "Momentum", text: "The idea that things which have been rising recently tend to keep rising for a while. It works in some periods and fails in others." },
+  stopLoss: { term: "Stop-loss", text: "An automatic sale when one holding falls a set percentage below what was paid, to limit the loss on it." },
+  lossLimit: { term: "Total loss limit", text: "If the whole bot loses this share of its budget, it sells everything and switches itself off." },
+  backtest: { term: "Test on past prices", text: "Running the rules on historical prices to see what would have happened. Useful for learning, but the future will differ." },
+  bars: { term: "Price bars", text: "How often the bot looks at prices. Daily bars mean it decides once per trading day; shorter bars mean more frequent trades." },
+  benchmark: { term: "Just holding", text: "What you would have made by buying everything on the list in equal parts on day one and never selling." },
+};

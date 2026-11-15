@@ -93,6 +93,26 @@ export interface Point {
   value: number;
 }
 
+export interface Company {
+  name: string;
+  industry: string;
+  country: string;
+  exchange: string;
+  ipo: string;
+  website: string;
+  logo: string;
+  marketCap: number | null;
+  pe: number | null;
+  eps: number | null;
+  dividendYield: number | null;
+  beta: number | null;
+  profitMargin: number | null;
+  revenueGrowth: number | null;
+  analysts: { buy: number; hold: number; sell: number; period: string } | null;
+  nextEarnings: string | null;
+  lastEarnings: { period: string; actual: number; estimate: number | null; surprisePct: number | null } | null;
+}
+
 export interface Api {
   mode: "demo" | "live";
   brokerStatus(): Promise<{ paper: boolean; live: boolean }>;
@@ -110,6 +130,8 @@ export interface Api {
   quotes(symbols: string[]): Promise<Record<string, Quote>>;
   news(symbols: string[], limit: number, name?: string): Promise<NewsItem[]>;
   search(q: string, market: "us" | "eu"): Promise<Asset[]>;
+  /** Company facts; null when unavailable (ETF, crypto, or the data source is not set up). */
+  company(symbol: string): Promise<Company | null>;
   watchlist(): Promise<WatchItem[]>;
   addWatch(item: WatchItem): Promise<void>;
   removeWatch(symbol: string): Promise<void>;
