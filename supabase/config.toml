@@ -1,0 +1,7 @@
+# Both functions check who is calling themselves (user token / scheduler secret),
+# so the gateway's own JWT check is switched off to avoid double handling.
+[functions.api]
+verify_jwt = false
+
+[functions.bot-runner]
+verify_jwt = false

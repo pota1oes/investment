@@ -1,0 +1,29 @@
+{
+  "version": "5",
+  "specifiers": {
+    "jsr:@supabase/supabase-js@2": "2.119.0"
+  },
+  "jsr": {
+    "@supabase/supabase-js@2.119.0": {
+      "integrity": "1bb0b15e3953d973ddea394ad12a0759752965bf319367b18465572d10968707"
+    }
+  },
+  "workspace": {
+    "packageJson": {
+      "dependencies": [
+        "npm:@supabase/supabase-js@^2.119.0",
+        "npm:@types/react-dom@^19.3.0",
+        "npm:@types/react@^19.3.0",
+        "npm:@vitejs/plugin-react@^6.3.0",
+        "npm:deno@^2.9.6",
+        "npm:lightweight-charts@^5.3.0",
+        "npm:react-dom@^19.3.1",
+        "npm:react-router-dom@^7.18.5",
+        "npm:react@^19.3.1",
+        "npm:typescript@^7.0.2",
+        "npm:vite@^8.3.8",
+        "npm:vitest@^5.1.0"
+      ]
+    }
+  }
+}
