@@ -13,15 +13,13 @@ import {
   type Quote,
   trade,
 } from "../_shared/alpaca.ts";
+import { answerProposal } from "../_shared/ai.ts";
+import { aiConfigured } from "../_shared/analyst.ts";
 import { initialState, isCrypto, isEuSymbol, validateBotConfig } from "../_shared/engine.ts";
 import { admin, type BotRow, cycleBot, encrypt, loadCreds } from "../_shared/server.ts";
+import { cached, companyFacts, googleNews, HttpError } from "../_shared/sources.ts";
 import type { Bar, Timeframe } from "../_shared/strategy.ts";
 
-class HttpError extends Error {
-  constructor(public status: number, message: string) {
-    super(message);
-  }
-}
 const bad = (m: string) => new HttpError(400, m);
 
 const cors = {
@@ -113,25 +111,6 @@ async function ownBot(ctx: Ctx, id: unknown): Promise<BotRow> {
 
 // --- European data (Alpha Vantage daily prices + Google News headlines) ---------
 
-async function cached<T>(
-  db: SupabaseClient,
-  key: string,
-  ttlMs: number,
-  load: () => Promise<T>,
-): Promise<T> {
-  const { data: row } = await db.from("market_cache").select("data, fetched_at").eq("key", key)
-    .maybeSingle();
-  if (row && Date.now() - Date.parse(row.fetched_at) < ttlMs) return row.data as T;
-  try {
-    const fresh = await load();
-    await db.from("market_cache").upsert({ key, data: fresh, fetched_at: new Date().toISOString() });
-    return fresh;
-  } catch (e) {
-    if (row) return row.data as T; // provider down or rate-limited: serve the older copy
-    throw e;
-  }
-}
-
 async function alphaVantage(params: Record<string, string>) {
   const key = Deno.env.get("ALPHAVANTAGE_KEY");
   if (!key) throw bad("European data is not set up yet (missing ALPHAVANTAGE_KEY on the server).");
@@ -177,43 +156,6 @@ function quoteFromBars(bars: Bar[]): Quote | null {
     volume: last.v,
   };
 }
-
-const unescapeXml = (s: string) =>
-  s.replace(/<!\[CDATA\[(.*?)\]\]>/gs, "$1")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'").replace(/&amp;/g, "&");
-
-function googleNews(db: SupabaseClient, symbol: string, name: string): Promise<NewsItem[]> {
-  const query = `${name || symbol.split(".")[0]} stock`;
-  return cached(db, `gnews:${query.toLowerCase()}`, 30 * 60_000, async () => {
-    const res = await fetch(
-      `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=en&gl=US&ceid=US:en`,
-      { signal: AbortSignal.timeout(10_000) },
-    );
-    if (!res.ok) throw new Error("News provider unavailable.");
-    const xml = await res.text();
-    const items: NewsItem[] = [];
-    for (const m of xml.matchAll(/<item>(.*?)<\/item>/gs)) {
-      const tag = (t: string) =>
-        unescapeXml(m[1].match(new RegExp(`<${t}[^>]*>(.*?)</${t}>`, "s"))?.[1] ?? "").trim();
-      const url = tag("link");
-      if (!/^https:\/\//.test(url)) continue;
-      const source = tag("source");
-      items.push({
-        id: url,
-        headline: tag("title").replace(new RegExp(`\\s+-\\s+${escapeRe(source)}$`), ""),
-        summary: "",
-        source,
-        url,
-        time: new Date(tag("pubDate") || Date.now()).toISOString(),
-        symbols: [symbol],
-      });
-      if (items.length >= 20) break;
-    }
-    return items;
-  });
-}
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // --- asset search ------------------------------------------------------------
 
@@ -522,81 +464,17 @@ const actions: Record<string, (ctx: Ctx, b: Body) => Promise<unknown>> = {
       .map((x) => x.a);
   },
 
-  // Company facts from Finnhub (optional: needs a free FINNHUB_KEY secret). Cached for a day.
   async company(ctx, b) {
-    const symbol = sym(b.symbol);
-    const key = Deno.env.get("FINNHUB_KEY");
-    if (!key || isCrypto(symbol) || isEuSymbol(symbol)) return null;
-    return cached(ctx.db, `finnhub:company:${symbol}`, 24 * 3_600_000, async () => {
-      // deno-lint-ignore no-explicit-any
-      const get = async (path: string): Promise<any> => {
-        const res = await fetch(`https://finnhub.io/api/v1${path}`, {
-          headers: { "X-Finnhub-Token": key },
-          signal: AbortSignal.timeout(10_000),
-        });
-        if (res.status === 429) throw new HttpError(429, "Company data limit reached; try again in a minute.");
-        return res.ok ? await res.json() : null; // endpoints outside the free plan are simply skipped
-      };
-      const day = (d: Date) => d.toISOString().slice(0, 10);
-      const now = new Date();
-      const soon = new Date(now.getTime() + 120 * 86_400_000);
-      const q = `symbol=${encodeURIComponent(symbol)}`;
-      const [profile, metrics, recs, calendar, past] = await Promise.all([
-        get(`/stock/profile2?${q}`),
-        get(`/stock/metric?${q}&metric=all`),
-        get(`/stock/recommendation?${q}`),
-        get(`/calendar/earnings?${q}&from=${day(now)}&to=${day(soon)}`),
-        get(`/stock/earnings?${q}`),
-      ]);
-      if (!profile?.name) return null; // ETFs and unknown tickers have no company profile
-      const m = metrics?.metric ?? {};
-      const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
-      const rec = Array.isArray(recs) ? recs[0] : null;
-      // deno-lint-ignore no-explicit-any
-      const next = (calendar?.earningsCalendar ?? []).map((e: any) => String(e.date)).sort()[0] ?? null;
-      const lastQ = Array.isArray(past) ? past[0] : null;
-      const web = String(profile.weburl ?? "");
-      const logo = String(profile.logo ?? "");
-      return {
-        name: String(profile.name),
-        industry: String(profile.finnhubIndustry ?? ""),
-        country: String(profile.country ?? ""),
-        exchange: String(profile.exchange ?? ""),
-        ipo: String(profile.ipo ?? ""),
-        website: /^https:\/\//.test(web) ? web : "",
-        logo: /^https:\/\//.test(logo) ? logo : "",
-        marketCap: num(profile.marketCapitalization) != null ? profile.marketCapitalization * 1e6 : null,
-        pe: num(m.peTTM) ?? num(m.peBasicExclExtraTTM),
-        eps: num(m.epsTTM) ?? num(m.epsBasicExclExtraItemsTTM),
-        dividendYield: num(m.dividendYieldIndicatedAnnual),
-        beta: num(m.beta),
-        profitMargin: num(m.netProfitMarginTTM),
-        revenueGrowth: num(m.revenueGrowthTTMYoy),
-        analysts: rec
-          ? {
-            buy: (num(rec.buy) ?? 0) + (num(rec.strongBuy) ?? 0),
-            hold: num(rec.hold) ?? 0,
-            sell: (num(rec.sell) ?? 0) + (num(rec.strongSell) ?? 0),
-            period: String(rec.period ?? ""),
-          }
-          : null,
-        nextEarnings: next,
-        lastEarnings: lastQ && num(lastQ.actual) != null
-          ? {
-            period: String(lastQ.period ?? ""),
-            actual: lastQ.actual,
-            estimate: num(lastQ.estimate),
-            surprisePct: num(lastQ.surprisePercent),
-          }
-          : null,
-      };
-    });
+    return companyFacts(ctx.db, sym(b.symbol));
   },
 
   async "bots.save"(ctx, b) {
     const env = envOf(b.env);
     requireLive2fa(ctx, env);
     const config = validateBotConfig(b.config as never);
+    if (config.strategy.id === "ai" && env === "live" && Deno.env.get("AI_LIVE_ENABLED") !== "true") {
+      throw bad("AI analysts are limited to the paper account for now.");
+    }
     if (b.id) {
       const bot = await ownBot(ctx, b.id);
       if (bot.status === "running") throw bad("Pause the bot before editing it.");
@@ -631,6 +509,9 @@ const actions: Record<string, (ctx: Ctx, b: Body) => Promise<unknown>> = {
     const status = b.status === "running" ? "running" : "paused";
     if (status === "running") {
       requireLive2fa(ctx, bot.env);
+      if (bot.config.strategy.id === "ai" && !aiConfigured()) {
+        throw bad("The AI is not set up yet: add your Anthropic API key to the server first (see README).");
+      }
       const a = await trade(bot.env, await creds(ctx, bot.env), "/v2/account");
       if (bot.state.cash > Number(a.cash)) {
         throw bad(
@@ -658,7 +539,24 @@ const actions: Record<string, (ctx: Ctx, b: Body) => Promise<unknown>> = {
     const bot = await ownBot(ctx, b.id);
     requireLive2fa(ctx, bot.env);
     if (bot.status !== "running") throw bad("Start the bot first.");
-    return cycleBot(ctx.db, bot, "run");
+    return cycleBot(ctx.db, bot, "run", { ai: b.force === true ? "force" : "auto" });
+  },
+
+  // The user's answer to an AI proposal ("ask me first" mode).
+  async "bots.decide"(ctx, b) {
+    const bot = await ownBot(ctx, b.id);
+    requireLive2fa(ctx, bot.env);
+    if (bot.status !== "running") throw bad("Start the bot first.");
+    const proposalId = String(b.proposalId ?? "").slice(0, 40);
+    const approve = b.approve === true;
+    try {
+      return await cycleBot(ctx.db, bot, "run", {
+        ai: "skip",
+        mutate: (state) => [answerProposal(state, proposalId, approve, Date.now())],
+      });
+    } catch (e) {
+      throw bad(e instanceof Error ? e.message : "Could not record your answer.");
+    }
   },
 
   // The kill switch is deliberately NOT behind 2FA: stopping must always be possible.

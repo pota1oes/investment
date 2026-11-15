@@ -11,7 +11,7 @@ export interface Bar {
 }
 
 export type Signal = "long" | "flat" | "hold";
-export type StrategyId = "momentum" | "sma_cross" | "rsi_reversion" | "breakout";
+export type StrategyId = "momentum" | "sma_cross" | "rsi_reversion" | "breakout" | "ai";
 export type Timeframe = "15Min" | "1Hour" | "1Day";
 
 export interface StrategyConfig {
@@ -29,7 +29,7 @@ export interface ParamSpec {
 
 export const STRATEGIES: Record<
   StrategyId,
-  { name: string; description: string; params: ParamSpec[]; portfolio?: boolean }
+  { name: string; description: string; params: ParamSpec[]; portfolio?: boolean; external?: boolean }
 > = {
   momentum: {
     name: "Momentum rotation (hold the strongest few)",
@@ -59,6 +59,17 @@ export const STRATEGIES: Record<
       { key: "period", label: "RSI period (bars)", default: 14, min: 2, max: 100 },
       { key: "buyBelow", label: "Buy when RSI below", default: 30, min: 1, max: 60 },
       { key: "sellAbove", label: "Sell when RSI above", default: 55, min: 20, max: 99 },
+    ],
+  },
+  ai: {
+    name: "AI analyst (reads the news)",
+    description:
+      "An AI model reads recent news, prices and company facts for each symbol and decides what to buy, keep or sell. It only acts on well-supported news, and the usual budget, stop-loss and loss limit still apply.",
+    external: true, // signals come from the AI step, not from price formulas
+    params: [
+      { key: "maxPositions", label: "Most holdings at once", default: 3, min: 1, max: 10 },
+      { key: "minConfidence", label: "Minimum confidence to act (%)", default: 70, min: 50, max: 95 },
+      { key: "intervalHours", label: "Hours between AI checks", default: 12, min: 1, max: 24 },
     ],
   },
   breakout: {
@@ -103,6 +114,8 @@ export function normalizeStrategy(cfg: StrategyConfig): StrategyConfig {
 export function minBars(cfg: StrategyConfig): number {
   const p = normalizeStrategy(cfg).params;
   switch (cfg.id) {
+    case "ai":
+      return 30; // enough history for the price facts shown to the AI
     case "momentum":
       return Math.max(p.lookback + 1, p.trend);
     case "sma_cross":
@@ -156,8 +169,10 @@ export function computeSignals(config: StrategyConfig, bars: Bar[]): Signal[] {
   const closes = bars.map((b) => b.c);
   const out: Signal[] = new Array(bars.length).fill("hold");
   switch (cfg.id) {
+    case "ai":
     case "momentum":
-      // Needs every symbol at once; see portfolioSignals(). On its own a symbol only "holds".
+      // "momentum" needs every symbol at once (see portfolioSignals); "ai" signals are
+      // supplied from outside. On their own both only "hold".
       break;
     case "sma_cross": {
       const f = sma(closes, p.fast);
@@ -315,7 +330,11 @@ export function backtest(
 /** How many positions the budget is divided over. */
 export function strategySlots(config: StrategyConfig, symbolCount: number): number {
   const cfg = normalizeStrategy(config);
-  const n = cfg.id === "momentum" ? Math.min(cfg.params.topN, symbolCount) : symbolCount;
+  const n = cfg.id === "momentum"
+    ? Math.min(cfg.params.topN, symbolCount)
+    : cfg.id === "ai"
+    ? Math.min(cfg.params.maxPositions, symbolCount)
+    : symbolCount;
   return Math.max(1, n);
 }
 

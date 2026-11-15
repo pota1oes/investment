@@ -22,6 +22,11 @@ export interface BotConfig {
   budget: number; // money the bot is allowed to use
   stopLossPct: number; // per position, 0 = off
   maxDrawdownPct: number; // bot sells everything and halts when it has lost this much of its budget
+  /** Only for the "ai" strategy. */
+  ai?: {
+    mode: "approve" | "auto"; // approve = the AI proposes, the user confirms each trade
+    notes: string; // optional guidance from the user, passed to the AI
+  };
 }
 
 export interface PendingOrder {
@@ -41,6 +46,7 @@ export interface BotState {
   realizedPnl: number;
   equity: number; // last computed value of the bot
   waiting?: Record<string, boolean>; // symbols already reported as lacking price history
+  ai?: import("./ai.ts").AiState; // only for the "ai" strategy
 }
 
 export interface BrokerPort {
@@ -78,6 +84,8 @@ export function validateBotConfig(input: BotConfig): BotConfig {
     .filter(Boolean);
   if (symbols.length === 0) throw new Error("Add at least one symbol.");
   if (symbols.length > 20) throw new Error("A bot can trade at most 20 symbols.");
+  const isAi = input.strategy?.id === "ai";
+  if (isAi && symbols.length > 10) throw new Error("An AI analyst can follow at most 10 symbols.");
   for (const s of symbols) {
     if (isEuSymbol(s)) throw new Error(`${s} cannot be traded through Alpaca yet.`);
     if (!/^[A-Z0-9.]{1,10}(\/[A-Z]{3,5})?$/.test(s)) throw new Error(`Invalid symbol: ${s}`);
@@ -99,6 +107,15 @@ export function validateBotConfig(input: BotConfig): BotConfig {
     budget: Math.round(budget * 100) / 100,
     stopLossPct: pct(input.stopLossPct, 90),
     maxDrawdownPct: pct(input.maxDrawdownPct, 100),
+    ...(isAi
+      ? {
+        ai: {
+          mode: input.ai?.mode === "auto" ? "auto" as const : "approve" as const,
+          // Plain text only; control characters and angle brackets are stripped.
+          notes: String(input.ai?.notes ?? "").replace(/[\u0000-\u001f<>]/g, " ").trim().slice(0, 300),
+        },
+      }
+      : {}),
   };
 }
 
@@ -204,11 +221,19 @@ export interface RunResult {
   halted: boolean;
 }
 
+export interface ExternalSignals {
+  /** Decisions made outside the price formulas (the AI analyst). Missing symbols "hold". */
+  signals: Record<string, Signal>;
+  /** Preferred buying order, strongest conviction first. */
+  priority?: string[];
+}
+
 export async function runBot(
   config: BotConfig,
   prev: BotState,
   broker: BrokerPort,
   now: number,
+  external?: ExternalSignals,
 ): Promise<RunResult> {
   const cfg = validateBotConfig(config);
   const state = clone(prev);
@@ -282,7 +307,9 @@ export async function runBot(
     usable[symbol] = bars;
   }
   const allSignals = portfolioSignals(cfg.strategy, usable);
-  const signalOf = (s: string): Signal | undefined => allSignals[s]?.at(-1);
+  const fromOutside = cfg.strategy.id === "ai";
+  const signalOf = (s: string): Signal | undefined =>
+    fromOutside ? (usable[s] ? external?.signals[s] ?? "hold" : undefined) : allSignals[s]?.at(-1);
   const slots = strategySlots(cfg.strategy, cfg.symbols.length);
   const busy = (s: string) => state.pending.some((p) => p.symbol === s);
 
@@ -312,10 +339,18 @@ export async function runBot(
   // Pass 2: entries. Wait while any sale is still settling, so the freed cash is
   // available and a rotation never buys a half-sized position.
   if (!state.pending.some((p) => p.side === "sell")) {
+    const rank = (s: string) => {
+      const i = external?.priority?.indexOf(s) ?? -1;
+      return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+    };
     const wanted = cfg.symbols.filter((s) =>
       signalOf(s) === "long" && !state.positions[s] && !state.blocked[s] && !busy(s) && tradable(s)
-    );
+    ).sort((a, b) => rank(a) - rank(b));
+    // Never hold more positions than the budget is divided into.
+    let room = slots - Object.keys(state.positions).length -
+      state.pending.filter((p) => p.side === "buy").length;
     for (const symbol of wanted) {
+      if (room <= 0) break;
       try {
         const target = state.equity / slots;
         const notional = Math.floor(Math.min(state.cash, target) * 100) / 100;
@@ -324,6 +359,7 @@ export async function runBot(
         const { id } = await broker.placeOrder({ symbol, side: "buy", notional });
         state.cash -= notional;
         state.pending.push({ id, symbol, side: "buy", notional, reason: "signal" });
+        room--;
         events.push({ type: "order", symbol, message: `Buy order for ${money(notional)} (signal)` });
       } catch (e) {
         events.push({ type: "error", symbol, message: msg(e) });

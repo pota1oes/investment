@@ -65,7 +65,8 @@ export const liveApi: Api = {
   saveBot: (env, config, id) => call("bots.save", { env, config, id }),
   deleteBot: (id) => call("bots.delete", { id }),
   setBotStatus: (id, status) => call("bots.setStatus", { id, status }),
-  runBot: (id) => call("bots.run", { id }),
+  runBot: (id, askAi) => call("bots.run", { id, force: askAi === true }),
+  decideProposal: (id, proposalId, approve) => call("bots.decide", { id, proposalId, approve }),
   liquidateBot: (id) => call("bots.liquidate", { id }),
   async botEvents(id) {
     const rows = ok<Record<string, unknown>[]>(

@@ -2,7 +2,9 @@
 // function that runs one bot cycle and saves the result.
 
 import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { activeSignals, applyVerdict } from "./ai.ts";
 import { brokerPort, type Creds, type Env } from "./alpaca.ts";
+import { consultAi } from "./analyst.ts";
 import {
   type BotConfig,
   type BotEvent,
@@ -94,11 +96,32 @@ export interface BotRow {
  * The new state is saved even if only part of the cycle succeeded, so an order
  * that was placed is never forgotten.
  */
+export interface CycleOptions {
+  /** "auto": consult the AI if it is due; "force": consult it now; "skip": do not consult it. */
+  ai?: "auto" | "force" | "skip";
+  /** A change to apply to the freshly loaded state before the cycle (e.g. the user's answer to a proposal). */
+  mutate?: (state: BotState) => BotEvent[];
+}
+
 export async function cycleBot(
   db: SupabaseClient,
   bot: BotRow,
   mode: "run" | "liquidate",
-): Promise<{ events: BotEvent[]; status: BotRow["status"] }> {
+  opts: CycleOptions = {},
+): Promise<{ events: BotEvent[]; status: BotRow["status"]; consultedAi: boolean }> {
+  const isAi = bot.config.strategy.id === "ai";
+  const pre: BotEvent[] = [];
+
+  // The slow, paid part (collecting news and asking the AI) happens BEFORE the bot is
+  // locked, so the kill switch is never held up by it. Its result is applied to the
+  // freshly loaded state below.
+  let consulted: Awaited<ReturnType<typeof consultAi>> = null;
+  if (isAi && mode === "run" && bot.status === "running" && (opts.ai ?? "auto") !== "skip") {
+    const aiCreds = await loadCreds(db, bot.user_id, bot.env).catch(() => null);
+    if (aiCreds) consulted = await consultAi(db, bot, aiCreds, opts.ai === "force");
+  }
+  const consultedAi = !!consulted;
+
   // Claim the bot so the scheduler and a manual "run now" can never act on it at
   // the same moment (which could double an order). Also re-reads the latest state.
   // The kill switch only waits 3 seconds: stopping must not be held up.
@@ -112,14 +135,23 @@ export async function cycleBot(
     .maybeSingle();
   if (claimError) throw new Error(claimError.message);
   if (!claimed) {
+    if (opts.mutate) throw new Error("The bot is busy right now; try again in a few seconds.");
     return {
       events: [{ type: "info", message: "A cycle is running for this bot right now; try again in a few seconds." }],
       status: bot.status,
+      consultedAi,
     };
   }
   bot = claimed as BotRow;
   if (mode === "run" && bot.status !== "running") {
-    return { events: [], status: bot.status };
+    return { events: [], status: bot.status, consultedAi };
+  }
+  if (opts.mutate) pre.push(...opts.mutate(bot.state));
+  if (consulted) {
+    pre.push(...consulted.events);
+    if (consulted.verdict) {
+      pre.push(...applyVerdict(bot.config, bot.state, consulted.verdict, Date.now(), consulted.verdict.cost));
+    }
   }
 
   let result: RunResult;
@@ -129,11 +161,12 @@ export async function cycleBot(
     const port = brokerPort(bot.env, creds);
     result = mode === "liquidate"
       ? await liquidateBot(bot.state, port)
-      : await runBot(bot.config, bot.state, port, Date.now());
+      : await runBot(bot.config, bot.state, port, Date.now(), isAi ? activeSignals(bot.state, Date.now()) : undefined);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     result = { state: bot.state, events: [{ type: "error", message }], halted: false };
   }
+  result.events.unshift(...pre);
   const status = result.halted ? (mode === "liquidate" ? "paused" : "halted") : bot.status;
   const now = new Date().toISOString();
   const { error } = await db
@@ -152,5 +185,5 @@ export async function cycleBot(
       })),
     );
   }
-  return { events: result.events, status };
+  return { events: result.events, status, consultedAi };
 }

@@ -24,16 +24,33 @@ Deno.serve(async (req) => {
     .limit(200);
   if (error) return new Response(error.message, { status: 500 });
 
+  // The work continues after the reply is sent, so the scheduler is not kept waiting.
+  const work = runAll(db, (bots ?? []) as BotRow[]);
+  const wait = new URL(req.url).searchParams.get("wait") === "1";
+  // deno-lint-ignore no-explicit-any
+  const runtime = (globalThis as any).EdgeRuntime;
+  if (!wait && runtime?.waitUntil) {
+    runtime.waitUntil(work);
+    return Response.json({ started: (bots ?? []).length }, { status: 202 });
+  }
+  return Response.json(await work);
+});
+
+async function runAll(db: ReturnType<typeof admin>, bots: BotRow[]) {
   let ok = 0;
   let failed = 0;
-  for (const bot of (bots ?? []) as BotRow[]) {
+  // An AI consultation can take a minute or two, so at most one per run; the others
+  // get their turn on the following runs.
+  let aiUsed = false;
+  for (const bot of bots) {
     try {
-      await cycleBot(db, bot, "run");
+      const r = await cycleBot(db, bot, "run", { ai: aiUsed ? "skip" : "auto" });
+      aiUsed ||= r.consultedAi;
       ok++;
     } catch (e) {
       failed++;
       console.error(`bot ${bot.id}`, e);
     }
   }
-  return Response.json({ ran: ok, failed });
-});
+  return { ran: ok, failed };
+}

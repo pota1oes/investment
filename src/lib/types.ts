@@ -139,7 +139,10 @@ export interface Api {
   saveBot(env: Env, config: BotConfig, id?: string): Promise<void>;
   deleteBot(id: string): Promise<void>;
   setBotStatus(id: string, status: "running" | "paused"): Promise<void>;
-  runBot(id: string): Promise<void>;
+  /** One cycle now. `askAi` makes an AI analyst consult the AI immediately instead of waiting for its schedule. */
+  runBot(id: string, askAi?: boolean): Promise<void>;
+  /** Answer an AI proposal in "ask me first" mode. */
+  decideProposal(id: string, proposalId: string, approve: boolean): Promise<void>;
   liquidateBot(id: string): Promise<void>;
   botEvents(id: string): Promise<BotLogEntry[]>;
 }

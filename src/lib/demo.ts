@@ -9,7 +9,15 @@ import {
   runBot,
   validateBotConfig,
 } from "../../supabase/functions/_shared/engine.ts";
-import { TIMEFRAME_MS } from "../../supabase/functions/_shared/strategy.ts";
+import {
+  activeSignals,
+  type AiDecision,
+  answerProposal,
+  applyVerdict,
+  emptyAiState,
+  priceFacts,
+} from "../../supabase/functions/_shared/ai.ts";
+import { normalizeStrategy, TIMEFRAME_MS } from "../../supabase/functions/_shared/strategy.ts";
 import type { Api, Asset, Bar, Bot, BotLogEntry, Order, Position, Timeframe, WatchItem } from "./types.ts";
 
 type Row = [string, string, string, Asset["market"], number, number];
@@ -205,6 +213,29 @@ function log(id: string, events: { type: string; symbol?: string; message: strin
 }
 const wait = <T,>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 60));
 
+/**
+ * Stand-in for the AI in fake-money mode. No AI model is called here: the "decisions"
+ * are derived from the made-up prices, only so the screens and the approve / reject
+ * flow can be practised. The real analyst runs on the server against real news.
+ */
+function practiceVerdict(b: Bot): { view: string; decisions: AiDecision[] } {
+  const decisions = b.config.symbols.map((symbol): AiDecision => {
+    const f = priceFacts(series(symbol, "1Day", 90));
+    const m = f?.change1m ?? 0;
+    const held = !!b.state.positions[symbol];
+    const action = held ? (m < -4 ? "sell" : "hold") : m > 5 ? "buy" : "hold";
+    return {
+      symbol,
+      action,
+      confidence: action === "hold" ? 50 : Math.min(95, 62 + Math.round(Math.abs(m) * 2)),
+      evidence: action === "hold" ? "none" : "confirmed",
+      reason: `Practice decision, not from a real AI: the made-up price is ${m >= 0 ? "up" : "down"} ${Math.abs(m)}% in a month. The real analyst reads actual news instead.`,
+      sources: action === "hold" ? [] : ["Practice data"],
+    };
+  });
+  return { view: "Practice run on made-up prices. No AI model and no real news were used.", decisions };
+}
+
 export const demoApi: Api = {
   mode: "demo",
   brokerStatus: () => wait({ paper: true, live: false }),
@@ -307,16 +338,36 @@ export const demoApi: Api = {
     log(id, [{ type: "info", message: status === "running" ? "Bot started." : "Bot paused." }]);
     save();
   },
-  async runBot(id) {
+  async runBot(id, askAi) {
     const b = bot(id);
     if (b.status !== "running") throw new Error("Start the bot first.");
+    const isAi = b.config.strategy.id === "ai";
+    if (isAi) {
+      const hours = normalizeStrategy(b.config.strategy).params.intervalHours;
+      const ai = (b.state.ai ??= emptyAiState());
+      if (askAi || Date.now() - ai.decidedAt > hours * 3_600_000) {
+        log(id, applyVerdict(b.config, b.state, practiceVerdict(b), Date.now()));
+      }
+    }
     // Two passes: the first places orders, the second records their (instant) fills.
     for (let i = 0; i < 2; i++) {
-      const r = await runBot(b.config, b.state, port, Date.now() + DAY);
+      const r = await runBot(b.config, b.state, port, Date.now() + DAY, isAi ? activeSignals(b.state, Date.now()) : undefined);
       b.state = r.state;
       if (r.halted) b.status = "halted";
       log(id, r.events);
       if (r.halted) break;
+    }
+    b.lastRunAt = new Date().toISOString();
+    save();
+  },
+  async decideProposal(id, proposalId, approve) {
+    const b = bot(id);
+    if (b.status !== "running") throw new Error("Start the bot first.");
+    log(id, [answerProposal(b.state, proposalId, approve, Date.now())]);
+    for (let i = 0; i < 2; i++) {
+      const r = await runBot(b.config, b.state, port, Date.now() + DAY, activeSignals(b.state, Date.now()));
+      b.state = r.state;
+      log(id, r.events);
     }
     b.lastRunAt = new Date().toISOString();
     save();

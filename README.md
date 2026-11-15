@@ -54,6 +54,8 @@ You do these steps yourself — they involve creating accounts and handling secr
    `npx supabase secrets set ALPHAVANTAGE_KEY=...` (free tier: about 25 lookups a day).
    Optional, for company facts on stock pages (market value, P/E, earnings dates, analyst
    ratings): get a free key at finnhub.io and run `npx supabase secrets set FINNHUB_KEY=...`.
+   Optional, for the AI analyst: create an API key at console.anthropic.com (a paid
+   service, billed by Anthropic per use) and store it as the `ANTHROPIC_API_KEY` secret.
 4. Open `supabase/cron.sql`, fill in the two placeholders, and run it in the SQL editor.
 
 ### 2. GitHub Pages (the website)
@@ -95,6 +97,26 @@ You do these steps yourself — they involve creating accounts and handling secr
   "Stop & sell everything" button that works without 2FA.
 - Always run a bot on the paper account before funding it. Backtests are simulations;
   none of the built-in strategies is a recommendation and all of them can lose money.
+
+## AI analyst
+
+An optional bot type where an AI model (Claude) decides instead of a price formula.
+
+- **What it sees:** for each symbol, recent newswire articles, headlines from other
+  outlets (to check whether a story is corroborated), price changes, company facts and
+  whether the bot holds it. Article text is treated as untrusted data.
+- **What it returns:** buy / do nothing / sell per symbol, a confidence from 0-100, how
+  well the news is supported (confirmed, one source, rumour, no news) and its reasons.
+- **What code enforces, regardless of what the AI says:** confidence must reach your
+  minimum; buying requires confirmed news; a rumour can never trigger a sale; only the
+  bot's own symbols are accepted; budget, position size, stop-loss, loss limit and the
+  stop button are unchanged.
+- **Two modes:** "ask me first" (the AI proposes, you approve each trade) and automatic.
+- **Limits:** paper account only (set the `AI_LIVE_ENABLED=true` secret to lift this
+  once you trust it); each check costs AI usage, shown in the bot's activity log; it
+  cannot be backtested fairly; it reacts to news far slower than professional traders;
+  and it can be wrong. In fake-money mode no AI is called — the decisions there are
+  practice data for trying the screens.
 
 ## What is not included yet
 

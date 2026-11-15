@@ -353,6 +353,17 @@ a.chip:hover { border-color: var(--accent); text-decoration: none; }
 .preset b { font-size: 15px; }
 .preset span { color: var(--muted); font-weight: 400; font-size: 13px; }
 .preset:hover:not(:disabled) { border-color: var(--accent); transform: translateY(-1px); }
+.preset.ai { background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 16%, var(--panel-2)), color-mix(in srgb, var(--accent-2) 14%, var(--panel-2))); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.ai-settings { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 2px; }
+.proposals { background: color-mix(in srgb, var(--accent) 9%, var(--panel-2)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line)); border-radius: 12px; padding: 14px; margin: 12px 0; display: grid; gap: 12px; }
+.proposals h4 { margin: 0; font-size: 14px; }
+.proposal { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 12px; }
+.proposal > div:first-child { flex: 1; min-width: 240px; }
+.proposal p { margin: 6px 0 2px; }
+.ai-view { background: var(--panel-2); border-radius: 12px; padding: 12px 14px; margin: 12px 0; }
+.ai-view summary { cursor: pointer; font-weight: 600; }
+.ai-view p { color: var(--muted); }
+table.wrap td.why { white-space: normal; min-width: 260px; color: var(--muted); }
 .how ol { margin: 10px 0 16px; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); }
 .how ol b { color: var(--text); }
 .bot.running { border-color: color-mix(in srgb, var(--up) 45%, var(--line)); }
